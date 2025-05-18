@@ -1,4 +1,4 @@
 # OptiVox
 ### Build as part of Hackcelerate
-40 million people around the world suffer with conditions like ALS, Locked-In Syndrome, or severe paralysis ; who are fully aware but unable to speak or move. Existing solutions are expensive, invasive, or hard to use. There is a critical need for a simple, affordable, and non-invasive way to help them communicate using just their eyes.
+People with severe paralysis or ALS are mentally aware but unable to communicate, leaving them isolated. Existing tools often fall short. Our solution: an AI-powered, open-source interface that converts eye movements into text using gaze tracking and GPT-based sentence prediction—restoring their ability to connect and express themselves.
 
