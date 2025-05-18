@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NeuroScribe Gaze Keyboard</title>
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .container {
+      display: flex;
+      width: 100%;
+    }
+    .text-output {
+      width: 20%;
+      padding: 1rem;
+      background-color: #f0f0f0;
+      border-right: 2px solid #ccc;
+      overflow-y: auto;
+    }
+    .keyboard {
+      width: 60%;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 5px;
+      background-color: #ddd;
+      height: 100vh;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    .key {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+      font-weight: bold;
+      background-color: white;
+      border: 2px solid #aaa;
+      border-radius: 10px;
+      user-select: none;
+      transition: all 0.3s;
+    }
+    .key.highlighted {
+      background-color: #4a90e2;
+      color: white;
+      transform: scale(1.05);
+      box-shadow: 0 0 15px rgba(74, 144, 226, 0.7);
+    }
+    .key.selected {
+      background-color: #5cb85c;
+      color: white;
+      animation: pulse 0.5s;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+    .video-box {
+      width: 20%;
+      background-color: #222;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 1rem;
+      position: relative;
+    }
+    .video-container {
+      position: relative;
+      width: 100%;
+      margin-bottom: 1rem;
+    }
+    video {
+      width: 100%;
+      height: auto;
+      border: 2px solid #ccc;
+      border-radius: 5px;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 5px;
+    }
+    .batch-indicator {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      margin-bottom: 0.5rem;
+    }
+    .batch-nav {
+      padding: 0.5rem 1rem;
+      background-color: #4a90e2;
+      color: white;
+      border-radius: 5px;
+      margin: 0 5px;
+      font-weight: bold;
+    }
+    .status {
+      margin-top: 1rem;
+      padding: 0.5rem;
+      border-radius: 5px;
+      width: 100%;
+      text-align: center;
+      background-color: #333;
+    }
+    .debug-info {
+      margin-top: 1rem;
+      font-size: 0.8rem;
+      background-color: #333;
+      padding: 0.5rem;
+      border-radius: 5px;
+      width: 100%;
+      overflow-y: auto;
+      max-height: 100px;
+    }
+    .calibration-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      color: white;
+    }
+    .calibration-point {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background-color: red;
+      border-radius: 50%;
+      transition: all 0.5s ease;
+    }
+    .batch-switch-zones {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .left-zone, .right-zone {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      width: 10%;
+      background-color: rgba(255, 255, 255, 0.0);
+    }
+    .left-zone {
+      left: 0;
+    }
+    .right-zone {
+      right: 0;
+    }
+  </style>
+</head>
+<script src="crct.js"></script>
+<body>
+<div class="container">
+  <div class="text-output">
+    <h3>Typed Text</h3>
+    <div id="typedText" contenteditable="true" style="min-height: 30%; font-size: 1.5rem;"></div>
+    <h3>Corrected Text</h3>
+    <div id="correctedText" style="min-height: 20%; font-size: 1.5rem;"></div>
+    <div style="margin-top: 1rem;">
+      <button id="startCalibrationBtn" style="padding: 0.5rem; background-color: #4a90e2; color: white; border: none; border-radius: 5px; cursor: pointer;">
+        Calibrate Eye Tracker
+      </button>
+    </div>
+  </div>
+
+
+  <div class="keyboard" id="keyboard">
+    <div class="batch-switch-zones">
+      <div class="left-zone" id="leftZone"></div>
+      <div class="right-zone" id="rightZone"></div>
+    </div>
+  </div>
+
+
+  <div class="video-box">
+    <h3>NeuroScribe</h3>
+    <div class="batch-indicator">
+      <div class="batch-nav" id="prevBatch">◀</div>
+      <div id="batchDisplay">Batch 1/3</div>
+      <div class="batch-nav" id="nextBatch">▶</div>
+    </div>
+    <div class="video-container">
+      <video id="video" autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="status" id="status">Ready</div>
+    <div class="debug-info" id="debug">Eye tracking not initialized</div>
+  </div>
+</div>
+
+
+<div id="calibrationOverlay" class="calibration-overlay" style="display: none;">
+  <h2>Calibration</h2>
+  <p>Look at each point and blink to confirm. This helps improve tracking accuracy.</p>
+  <div id="calibrationPoint" class="calibration-point"></div>
+  <div id="calibrationStatus" style="margin-top: 2rem;">Ready to begin</div>
+</div>
+
+
+<script>
+  // Keyboard configuration
+  const batches = [
+    ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
+    ['J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R'],
+    ['S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Tab']
+  ];
+  let currentBatch = 0;
+  const keyboard = document.getElementById("keyboard");
+  const typedText = document.getElementById("typedText");
+  const correctedText = document.getElementById("correctedText");
+  const statusDisplay = document.getElementById("status");
+  const debugInfo = document.getElementById("debug");
+  const batchDisplay = document.getElementById("batchDisplay");
+
+
+  // System state
+  let lastSwitchTime = 0;
+  let gazeTarget = null;
+  let isCalibrating = false;
+  let calibrationPoints = [];
+  let currentCalibrationPoint = 0;
+  let blinkCooldown = false;
+  let webgazerInitialized = false;
+  let leftEyeOpen = true;
+  let rightEyeOpen = true;
+  let lastGazeX = 0;
+  let lastGazeY = 0;
+  let gazeStabilityCounter = 0;
+  const gazeStabilityThreshold = 10; // Number of consistent gaze readings needed for selection
+
+
+  // Element references
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const calibrationOverlay = document.getElementById('calibrationOverlay');
+  const calibrationPoint = document.getElementById('calibrationPoint');
+  const calibrationStatus = document.getElementById('calibrationStatus');
+  const startCalibrationBtn = document.getElementById('startCalibrationBtn');
+  const prevBatchBtn = document.getElementById('prevBatch');
+  const nextBatchBtn = document.getElementById('nextBatch');
+  const apiUrl = "https://3f40-2405-201-c012-b065-3c18-c260-fbb9-e124.ngrok-free.app/predict";
+
+
+  // Define batch switch zones precisely based on keyboard area
+  function updateBatchSwitchZones() {
+    const keyboardRect = keyboard.getBoundingClientRect();
+    const leftZone = document.getElementById('leftZone');
+    const rightZone = document.getElementById('rightZone');
+   
+    leftZone.style.height = `${keyboardRect.height}px`;
+    rightZone.style.height = `${keyboardRect.height}px`;
+  }
+
+
+  // Render the keyboard with the current batch
+  function renderKeyboard() {
+    keyboard.innerHTML = '';
+    // Re-add the batch switch zones
+    keyboard.innerHTML = `
+      <div class="batch-switch-zones">
+        <div class="left-zone" id="leftZone"></div>
+        <div class="right-zone" id="rightZone"></div>
+      </div>
+    `;
+   
+    const batch = batches[currentBatch];
+    for (let i = 0; i < 9; i++) {
+      const key = document.createElement("div");
+      key.className = "key";
+      key.textContent = batch[i];
+      key.dataset.index = i;
+      keyboard.appendChild(key);
+    }
+   
+    updateBatchSwitchZones();
+    batchDisplay.textContent = `Batch ${currentBatch + 1}/${batches.length}`;
+  }
+
+
+  // Switch between character batches
+  function switchBatch(direction) {
+    if (direction === 'left') {
+      currentBatch = (currentBatch - 1 + batches.length) % batches.length;
+    } else if (direction === 'right') {
+      currentBatch = (currentBatch + 1) % batches.length;
+    }
+    renderKeyboard();
+    updateStatus(`Switched to batch ${currentBatch + 1}`);
+  }
+
+
+  // Select character using blink
+  function selectCurrentKey() {
+    if (!gazeTarget) return;
+   
+    const key = gazeTarget;
+    key.classList.add('selected');
+    setTimeout(() => key.classList.remove('selected'), 500);
+   
+    const char = key.textContent;
+    if (char === 'Tab') {
+      // typedText.textContent = typedText.textContent.slice(0, -1);
+      typedText.textContent += " ";
+      updateStatus("Space");
+    } else {
+      typedText.textContent += char;
+      sendToNgrok(); 
+      updateStatus(`Typed: ${char}`);
+    }
+  }
+
+    let typingTimer;
+    const delay = 8000; // 5 seconds
+    typedText.addEventListener("input", () => {
+  clearTimeout(typingTimer);
+  correctedText.textContent = "Waiting for you to finish typing...";
+
+  typingTimer = setTimeout(() => {
+    const text = typedText.textContent.trim();
+
+    if (text !== "") {
+      correctedText.textContent = "Sending request...";
+      fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({ text })
+      })
+      .then(res => res.json())
+      .then(data => {
+        // Use innerHTML + <br> to preserve line breaks in display
+        correctedText.innerHTML = `Original: ${escapeHtml(data.original_input)}<br>Cleaned: ${escapeHtml(data.cleaned_input)}`;
+      })
+      .catch(err => {
+        correctedText.textContent = "Error: " + err.message;
+      });
+    } else {
+      correctedText.textContent = "Input is empty.";
+    }
+  }, delay);
+});
+
+// Simple helper to escape HTML special characters to avoid XSS or layout break
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+  // Update status display
+  function updateStatus(message) {
+    statusDisplay.textContent = message;
+    console.log(message);
+  }
+
+
+  // Update debug information
+  function updateDebug(message) {
+    debugInfo.textContent = message;
+  }
+
+
+  // Highlight key based on gaze position
+  function highlightKeyAt(x, y) {
+    const keyboardRect = keyboard.getBoundingClientRect();
+   
+    // Only check batch switch zones if significantly into the zones
+    // This prevents accidental switching
+    if (x < keyboardRect.left - 50 || x > keyboardRect.right + 50 ||
+        y < keyboardRect.top - 50 || y > keyboardRect.bottom + 50) {
+      // If gaze is far outside keyboard, ignore
+      document.querySelectorAll('.key').forEach(k => k.classList.remove('highlighted'));
+      gazeTarget = null;
+      gazeStabilityCounter = 0;
+      return;
+    }
+   
+    // For batch switching, require deliberate gaze at extreme edges
+    // and significant dwelling time to prevent accidental switching
+    const batchSwitchingEnabled = true;
+    const batchSwitchThreshold = 5; // Higher value means more deliberate gaze required
+    let leftEdgeDwellCount = 0;
+    let rightEdgeDwellCount = 0;
+   
+    // Left edge detection with deliberate dwell time
+    if (batchSwitchingEnabled &&
+        x < keyboardRect.left + (keyboardRect.width * 0.05) &&
+        x > keyboardRect.left - 20 &&
+        y >= keyboardRect.top && y <= keyboardRect.bottom &&
+        Date.now() - lastSwitchTime > 2000) {
+     
+      leftEdgeDwellCount++;
+      rightEdgeDwellCount = 0;
+     
+      if (leftEdgeDwellCount > batchSwitchThreshold) {
+        updateStatus("Left edge detected - switching batch");
+        switchBatch('left');
+        lastSwitchTime = Date.now();
+        leftEdgeDwellCount = 0;
+      }
+      return;
+    } else {
+      leftEdgeDwellCount = 0;
+    }
+   
+    // Right edge detection with deliberate dwell time
+    if (batchSwitchingEnabled &&
+        x > keyboardRect.right - (keyboardRect.width * 0.05) &&
+        x < keyboardRect.right + 20 &&
+        y >= keyboardRect.top && y <= keyboardRect.bottom &&
+        Date.now() - lastSwitchTime > 2000) {
+     
+      rightEdgeDwellCount++;
+      leftEdgeDwellCount = 0;
+     
+      if (rightEdgeDwellCount > batchSwitchThreshold) {
+        updateStatus("Right edge detected - switching batch");
+        switchBatch('right');
+        lastSwitchTime = Date.now();
+        rightEdgeDwellCount = 0;
+      }
+      return;
+    } else {
+      rightEdgeDwellCount = 0;
+    }
+   
+    // Find key under gaze
+    const keys = [...document.querySelectorAll('.key')];
+    let targetKey = null;
+   
+    for (const key of keys) {
+      const rect = key.getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        targetKey = key;
+        break;
+      }
+    }
+   
+    // Handle highlighting
+    if (targetKey) {
+      // Check if gaze is stable on same key
+      if (gazeTarget === targetKey) {
+        gazeStabilityCounter++;
+      } else {
+        gazeStabilityCounter = 0;
+      }
+     
+      // Update highlighted key
+      keys.forEach(k => k.classList.remove('highlighted'));
+      targetKey.classList.add('highlighted');
+      gazeTarget = targetKey;
+     
+      // Update debug info
+      updateDebug(`Gaze at: ${targetKey.textContent} (stability: ${gazeStabilityCounter}/${gazeStabilityThreshold})`);
+    } else {
+      keys.forEach(k => k.classList.remove('highlighted'));
+      gazeTarget = null;
+      gazeStabilityCounter = 0;
+    }
+  }
+
+
+  // Setup calibration points
+  function setupCalibration() {
+    calibrationPoints = [];
+   
+    // Create 9 calibration points in a grid
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+   
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        calibrationPoints.push({
+          x: windowWidth * (0.2 + (j * 0.3)),
+          y: windowHeight * (0.2 + (i * 0.3))
+        });
+      }
+    }
+   
+    return calibrationPoints;
+  }
+
+
+  // Start calibration process
+  function startCalibration() {
+    isCalibrating = true;
+    currentCalibrationPoint = 0;
+    calibrationPoints = setupCalibration();
+    calibrationOverlay.style.display = "flex";
+   
+    // Position first calibration point
+    moveCalibrationPoint(0);
+   
+    calibrationStatus.textContent = "Look at the red dot and blink to confirm";
+  }
+
+
+  // Move to next calibration point
+  function moveCalibrationPoint(index) {
+    if (index >= calibrationPoints.length) {
+      finishCalibration();
+      return;
+    }
+   
+    const point = calibrationPoints[index];
+    calibrationPoint.style.left = `${point.x}px`;
+    calibrationPoint.style.top = `${point.y}px`;
+   
+    calibrationStatus.textContent = `Point ${index + 1}/${calibrationPoints.length}: Look and blink`;
+  }
+
+
+  // Complete calibration
+  function finishCalibration() {
+    isCalibrating = false;
+    calibrationOverlay.style.display = "none";
+    updateStatus("Calibration complete! System ready.");
+  }
+
+
+  // Process blink for either calibration or selection
+  function processBlink() {
+    if (isCalibrating) {
+      // During calibration, each blink confirms a point
+      webgazer.recordScreenPosition(
+        parseFloat(calibrationPoint.style.left),
+        parseFloat(calibrationPoint.style.top),
+        'click'
+      );
+     
+      currentCalibrationPoint++;
+      moveCalibrationPoint(currentCalibrationPoint);
+    } else {
+      // During normal operation, blink selects the current key
+      if (gazeStabilityCounter >= gazeStabilityThreshold) {
+        selectCurrentKey();
+      }
+    }
+  }
+
+
+  // Calculate Eye Aspect Ratio (EAR)
+  function calculateEAR(landmarks, left = true) {
+    // These indices correspond to the eye landmarks in MediaPipe Face Mesh
+    const idx = left ? [33, 160, 158, 133, 153, 144] : [362, 385, 387, 263, 373, 380];
+    const [p1, p2, p3, p4, p5, p6] = idx.map(i => landmarks[i]);
+   
+    // Calculate euclidean distances
+    const vertical1 = Math.hypot(p2.x - p6.x, p2.y - p6.y);
+    const vertical2 = Math.hypot(p3.x - p5.x, p3.y - p5.y);
+    const horizontal = Math.hypot(p1.x - p4.x, p1.y - p4.y);
+   
+    // EAR formula
+    return (vertical1 + vertical2) / (2.0 * horizontal);
+  }
+
+
+  // Track eye state for better blink detection
+  let eyeOpenValues = [];
+  let eyeClosedValues = [];
+  let calibratedEyeThreshold = 0.25; // Initial threshold
+  const EYE_CALIBRATION_SAMPLES = 30;
+
+
+  // Improved blink detection with adaptive threshold
+  function detectBlink(leftEAR, rightEAR) {
+    const avgEAR = (leftEAR + rightEAR) / 2;
+   
+    // Collect samples for calibration during normal operation
+    if (eyeOpenValues.length < EYE_CALIBRATION_SAMPLES) {
+      eyeOpenValues.push(avgEAR);
+      updateDebug(`Calibrating open eyes: ${eyeOpenValues.length}/${EYE_CALIBRATION_SAMPLES}`);
+     
+      if (eyeOpenValues.length === EYE_CALIBRATION_SAMPLES) {
+        // Calculate average open eye value
+        const avgOpenEye = eyeOpenValues.reduce((a, b) => a + b, 0) / eyeOpenValues.length;
+       
+        // Set threshold to 70% of open eye value
+        calibratedEyeThreshold = avgOpenEye * 0.7;
+        updateStatus(`Eye threshold calibrated: ${calibratedEyeThreshold.toFixed(3)}`);
+      }
+      return false;
+    }
+   
+    // Check if eyes are closed using calibrated threshold
+    const blinking = avgEAR < calibratedEyeThreshold;
+   
+    // Visualize blink state
+    const blinkState = document.createElement('div');
+    blinkState.style.position = 'absolute';
+    blinkState.style.top = '10px';
+    blinkState.style.right = '10px';
+    blinkState.style.width = '20px';
+    blinkState.style.height = '20px';
+    blinkState.style.borderRadius = '50%';
+    blinkState.style.backgroundColor = blinking ? 'red' : 'green';
+    document.body.appendChild(blinkState);
+    setTimeout(() => blinkState.remove(), 100);
+   
+    // Debug values
+    updateDebug(`EAR: ${avgEAR.toFixed(3)}, Threshold: ${calibratedEyeThreshold.toFixed(3)}, Blink: ${blinking}`);
+   
+    // Only trigger on transition from open to closed
+    if (blinking && leftEyeOpen && rightEyeOpen && !blinkCooldown) {
+      leftEyeOpen = false;
+      rightEyeOpen = false;
+      blinkCooldown = true;
+     
+      // Process the blink action
+      processBlink();
+     
+      // Set cooldown timer
+      setTimeout(() => {
+        blinkCooldown = false;
+      }, 1500);
+     
+      return true;
+    } else if (!blinking) {
+      // Eyes are open again
+      leftEyeOpen = true;
+      rightEyeOpen = true;
+    }
+   
+    return false;
+  }
+
+
+  // Initialize the system
+  async function initSystem() {
+    try {
+      // Setup video
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+     
+      video.onloadedmetadata = () => {
+        // Set canvas dimensions to match video
+        overlay.width = video.videoWidth;
+        overlay.height = video.videoHeight;
+       
+        // Initialize face mesh
+        initFaceMesh();
+       
+        // Initialize WebGazer
+        initWebGazer();
+      };
+     
+      // Add event listeners
+      startCalibrationBtn.addEventListener('click', startCalibration);
+      prevBatchBtn.addEventListener('click', () => switchBatch('left'));
+      nextBatchBtn.addEventListener('click', () => switchBatch('right'));
+     
+      // Initial keyboard rendering
+      renderKeyboard();
+     
+      // Handle window resize
+      window.addEventListener('resize', () => {
+        // Update keyboard layout and zones
+        renderKeyboard();
+       
+        // Update overlay canvas dimensions
+        if (video.videoWidth) {
+          overlay.width = video.videoWidth;
+          overlay.height = video.videoHeight;
+        }
+      });
+     
+    } catch (error) {
+      updateStatus(`Error initializing: ${error.message}`);
+      console.error(error);
+    }
+  document.addEventListener("DOMContentLoaded", () => {
+  const typedText = document.getElementById('typedText');
+  const correctedText = document.getElementById('correctedText');
+  console.log("typedText element:", typedText);
+  console.log("correctedText element:", correctedText);
+
+  let typingTimer;
+  const delay = 8000; // 8 seconds (you wrote 5 sec but set 8000 ms)
+  typedText.addEventListener("input", () => {
+    console.log("Input event fired!"); 
+    clearTimeout(typingTimer);
+    correctedText.textContent = "Waiting for you to finish typing...";
+
+    typingTimer = setTimeout(() => {
+      const text = typedText.textContent.trim();
+
+      if (text !== "") {
+        correctedText.textContent = "Sending request...";
+        fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify({ text })
+        })
+        .then(res => res.json())
+        .then(data => {
+          correctedText.innerHTML = `Original: ${escapeHtml(data.original_input)}<br>Cleaned: ${escapeHtml(data.cleaned_input)}`;
+        })
+        .catch(err => {
+          correctedText.textContent = "Error: " + err.message;
+        });
+      } else {
+        correctedText.textContent = "Input is empty.";
+      }
+    }, delay);
+    console.log("Listener added to typedText");
+  });
+  });
+  }
+
+
+  // Initialize face mesh tracking
+  function initFaceMesh() {
+    const ctx = overlay.getContext('2d');
+   
+    const faceMesh = new FaceMesh({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+   
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+   
+    // Add blink counter display
+    const blinkCounter = document.createElement('div');
+    blinkCounter.style.position = 'absolute';
+    blinkCounter.style.bottom = '10px';
+    blinkCounter.style.left = '10px';
+    blinkCounter.style.background = 'rgba(0,0,0,0.7)';
+    blinkCounter.style.color = 'white';
+    blinkCounter.style.padding = '5px';
+    blinkCounter.style.borderRadius = '5px';
+    blinkCounter.style.zIndex = '1000';
+    blinkCounter.textContent = 'Blinks: 0';
+    document.body.appendChild(blinkCounter);
+   
+    let blinkCount = 0;
+   
+    // Create large eye state indicator
+    const eyeStateIndicator = document.createElement('div');
+    eyeStateIndicator.style.position = 'fixed';
+    eyeStateIndicator.style.top = '10px';
+    eyeStateIndicator.style.left = '50%';
+    eyeStateIndicator.style.transform = 'translateX(-50%)';
+    eyeStateIndicator.style.width = '30px';
+    eyeStateIndicator.style.height = '30px';
+    eyeStateIndicator.style.borderRadius = '50%';
+    eyeStateIndicator.style.backgroundColor = 'green';
+    eyeStateIndicator.style.border = '3px solid white';
+    eyeStateIndicator.style.zIndex = '1000';
+    document.body.appendChild(eyeStateIndicator);
+   
+    // Track consecutive low EAR frames for more reliable blink detection
+    let lowEARFrameCount = 0;
+    const BLINK_FRAME_THRESHOLD = 3; // Need multiple consecutive low EAR frames to confirm blink
+   
+    faceMesh.onResults(results => {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+     
+      if (results.multiFaceLandmarks.length > 0) {
+        const landmarks = results.multiFaceLandmarks[0];
+       
+        // Calculate EAR values
+        const leftEAR = calculateEAR(landmarks, true);
+        const rightEAR = calculateEAR(landmarks, false);
+        const avgEAR = (leftEAR + rightEAR) / 2;
+       
+        // Update eye state indicator
+        if (avgEAR < calibratedEyeThreshold) {
+          eyeStateIndicator.style.backgroundColor = 'red';
+          lowEARFrameCount++;
+        } else {
+          eyeStateIndicator.style.backgroundColor = 'green';
+          lowEARFrameCount = 0;
+        }
+       
+        // Only count as blink if multiple consecutive frames show closed eyes
+        if (lowEARFrameCount >= BLINK_FRAME_THRESHOLD && !blinkCooldown) {
+          // Log blink detection with clear visual indicator
+          console.log("%c BLINK DETECTED! ", "background: red; color: white; font-size: 20px;");
+         
+          // Increment counter
+          blinkCount++;
+          blinkCounter.textContent = `Blinks: ${blinkCount}`;
+         
+          // Visual feedback in UI
+          document.body.style.outline = '5px solid red';
+          setTimeout(() => document.body.style.outline = 'none', 500);
+         
+          processBlink();
+          blinkCooldown = true;
+          setTimeout(() => blinkCooldown = false, 1000); // Reduce cooldown for better responsiveness
+        }
+       
+        // Draw landmarks
+        for (let i = 0; i < landmarks.length; i++) {
+          const lm = landmarks[i];
+         
+          // Only draw eye landmarks to reduce clutter
+          const eyeIndices = [33, 160, 158, 133, 153, 144, 362, 385, 387, 263, 373, 380];
+          if (eyeIndices.includes(i)) {
+            ctx.beginPath();
+            ctx.arc(lm.x * overlay.width, lm.y * overlay.height, 2, 0, 2 * Math.PI);
+            ctx.fillStyle = avgEAR < calibratedEyeThreshold ? "red" : "aqua";
+            ctx.fill();
+          }
+        }
+       
+        // Draw bounding box around eyes for better visualization
+        const leftEyePoints = [33, 160, 158, 133, 153, 144].map(i => ({
+          x: landmarks[i].x * overlay.width,
+          y: landmarks[i].y * overlay.height
+        }));
+       
+        const rightEyePoints = [362, 385, 387, 263, 373, 380].map(i => ({
+          x: landmarks[i].x * overlay.width,
+          y: landmarks[i].y * overlay.height
+        }));
+       
+        // Get eye bounding boxes
+        const getEyeBounds = points => {
+          const xs = points.map(p => p.x);
+          const ys = points.map(p => p.y);
+          return {
+            minX: Math.min(...xs) - 5,
+            maxX: Math.max(...xs) + 5,
+            minY: Math.min(...ys) - 5,
+            maxY: Math.max(...ys) + 5
+          };
+        };
+       
+        const leftEyeBounds = getEyeBounds(leftEyePoints);
+        const rightEyeBounds = getEyeBounds(rightEyePoints);
+       
+        // Draw eye rectangles with current EAR status color
+        ctx.strokeStyle = avgEAR < calibratedEyeThreshold ? "red" : "lime";
+        ctx.lineWidth = 2;
+       
+        ctx.strokeRect(
+          leftEyeBounds.minX,
+          leftEyeBounds.minY,
+          leftEyeBounds.maxX - leftEyeBounds.minX,
+          leftEyeBounds.maxY - leftEyeBounds.minY
+        );
+       
+        ctx.strokeRect(
+          rightEyeBounds.minX,
+          rightEyeBounds.minY,
+          rightEyeBounds.maxX - rightEyeBounds.minX,
+          rightEyeBounds.maxY - rightEyeBounds.minY
+        );
+       
+        // Add EAR text
+        ctx.font = "16px Arial";
+        ctx.fillStyle = "white";
+        ctx.fillText(`EAR: ${avgEAR.toFixed(3)}`, 10, 25);
+        ctx.fillText(`Threshold: ${calibratedEyeThreshold.toFixed(3)}`, 10, 50);
+        ctx.fillText(`Blink frames: ${lowEARFrameCount}/${BLINK_FRAME_THRESHOLD}`, 10, 75);
+       
+        // Show more detailed debug info
+        updateDebug(`L-EAR: ${leftEAR.toFixed(3)}, R-EAR: ${rightEAR.toFixed(3)}, Threshold: ${calibratedEyeThreshold.toFixed(3)}, Frame count: ${lowEARFrameCount}`);
+      }
+    });
+   
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await faceMesh.send({ image: video });
+      },
+      width: 640,
+      height: 480
+    });
+   
+    camera.start();
+  }
+
+
+  // Initialize WebGazer for eye tracking
+  function initWebGazer() {
+    webgazer
+      .setGazeListener((data) => {
+        if (!data) return;
+       
+        // Apply stronger smoothing filter to reduce jitter
+        const smoothingFactor = 0.85; // Increased from 0.7 for more stability
+       
+        // Initialize if first data point
+        if (lastGazeX === 0 && lastGazeY === 0) {
+          lastGazeX = data.x;
+          lastGazeY = data.y;
+          return; // Skip first data point
+        }
+       
+        // Apply exponential smoothing
+        lastGazeX = data.x * (1 - smoothingFactor) + lastGazeX * smoothingFactor;
+        lastGazeY = data.y * (1 - smoothingFactor) + lastGazeY * smoothingFactor;
+       
+        // Add small deadzone to prevent slight movements from causing changes
+        const DEADZONE = 5;
+        let lastProcessedX = 0;
+        let lastProcessedY = 0;
+       
+        if (Math.abs(lastGazeX - lastProcessedX) > DEADZONE ||
+            Math.abs(lastGazeY - lastProcessedY) > DEADZONE) {
+          // Process gaze position
+          highlightKeyAt(lastGazeX, lastGazeY);
+          lastProcessedX = lastGazeX;
+          lastProcessedY = lastGazeY;
+        }
+      })
+      .begin();
+   
+    // Increase face detection settings for more stability
+    webgazer.params.showVideo = false;
+    webgazer.params.showFaceOverlay = false;
+    webgazer.params.showFaceFeedbackBox = false;
+    webgazer.params.showPredictionPoints = false;
+   
+    // These settings help with stability
+    webgazer.params.sampleDuration = 3; // Longer sampling for better prediction
+    webgazer.params.trailLength = 10; // More data points in the trail for better averaging
+   
+    webgazerInitialized = true;
+    updateStatus("Eye tracking initialized");
+   
+    // Show visual indicator of gaze position when debugging
+    const debugMode = true;
+    if (debugMode) {
+      const gazePoint = document.createElement('div');
+      gazePoint.style.position = 'absolute';
+      gazePoint.style.width = '10px';
+      gazePoint.style.height = '10px';
+      gazePoint.style.borderRadius = '50%';
+      gazePoint.style.backgroundColor = 'red';
+      gazePoint.style.zIndex = '1000';
+      gazePoint.style.pointerEvents = 'none';
+      document.body.appendChild(gazePoint);
+     
+      setInterval(() => {
+        gazePoint.style.left = `${lastGazeX}px`;
+        gazePoint.style.top = `${lastGazeY}px`;
+      }, 20);
+    }
+  }
+
+
+  // Start the system when the page loads
+  window.onload = initSystem;
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
